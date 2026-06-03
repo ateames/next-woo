@@ -218,6 +218,7 @@ next-woo/
 │   │   ├── checkout/        # Order creation endpoint
 │   │   ├── og/              # OG image generation
 │   │   └── revalidate/      # Cache revalidation webhook
+│   ├── [slug]/              # Tag landing pages (WP page + product_tag_slug)
 │   ├── shop/
 │   │   ├── [slug]/          # Product detail pages
 │   │   └── category/[slug]/ # Category pages
@@ -233,6 +234,8 @@ next-woo/
 │   └── theme/               # Theme toggle
 ├── lib/
 │   ├── woocommerce.ts       # WooCommerce API functions
+│   ├── shop-catalog.ts      # Catalog queries (include/exclude tags)
+│   ├── shop-settings.ts     # Excluded tags from WordPress REST
 │   ├── woocommerce.d.ts     # WooCommerce type definitions
 │   ├── wordpress.ts         # WordPress API functions
 │   └── wordpress.d.ts       # WordPress type definitions
@@ -299,6 +302,47 @@ function MyComponent() {
 ```
 
 ## Customization
+
+### Product tags: hide from main shop and custom landing pages
+
+Use WooCommerce **product tags** to keep custom-only products off the main catalog while showing them on dedicated pages (for example `https://pleasantonthreads.com/custom-page`).
+
+**Requirements:** Install and activate the **Next.js Revalidation** plugin from `plugin/next-revalidate/` on your WordPress site (it adds shop settings, REST support, and page fields).
+
+#### 1. Tag products in WooCommerce
+
+1. Go to **Products → Tags** and create a tag (for example slug `custom`).
+2. Edit each custom-only product and assign that tag under **Product tags**.
+
+#### 2. Exclude tags from the main shop
+
+1. In WordPress go to **Next.js → Settings**.
+2. Under **Headless Shop Settings**, set **Excluded product tags** to comma-separated slugs (for example `custom`).
+3. Save. Those products no longer appear on `/shop`, the home page featured grid, or related products on other product pages. They remain available at `/shop/{product-slug}` when linked directly.
+
+Shoppers can still preview excluded tags via `/shop?tag=custom`.
+
+#### 3. Create a tag landing page
+
+1. Go to **Pages → Add New**.
+2. Set the page slug (for example `custom-page`) — this becomes `https://yoursite.com/custom-page`.
+3. In the sidebar meta box **Headless Shop — Product tag**, enter the WooCommerce tag slug (for example `custom`).
+4. Add marketing copy in the page editor and publish.
+
+The Next.js app renders WordPress content plus a product grid filtered to that tag. Pages with a product tag set redirect from `/pages/{slug}` to `/{slug}`.
+
+#### API reference (Next.js)
+
+```typescript
+import { getCatalogProducts } from "@/lib/shop-catalog";
+import { getShopExcludedTagSlugs } from "@/lib/shop-settings";
+
+// Main shop (excludes tags from plugin settings)
+await getCatalogProducts({ page: 1, perPage: 12 });
+
+// Tag landing page
+await getCatalogProducts({ includeTagSlug: "custom" });
+```
 
 ### Site Configuration
 

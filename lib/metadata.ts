@@ -2,10 +2,30 @@ import { siteConfig } from "@/site.config";
 import type { Metadata } from "next";
 
 /**
- * Strip HTML tags from a string
+ * Decode HTML entities (e.g. &amp; → &) for plain-text display.
+ * WordPress/WooCommerce API fields often encode ampersands and other characters.
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    )
+    .replace(/&#(\d+);/g, (_, dec) =>
+      String.fromCodePoint(parseInt(dec, 10))
+    )
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Strip HTML tags and decode entities for plain-text display.
  */
 export function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, "").trim();
+  return decodeHtmlEntities(html.replace(/<[^>]*>/g, "")).trim();
 }
 
 /**
@@ -34,6 +54,7 @@ export function generateContentMetadata({
   slug,
   type,
 }: ContentMetadataOptions): Metadata {
+  const plainTitle = stripHtml(title);
   const description = excerpt
     ? stripHtml(excerpt)
     : content
@@ -41,24 +62,26 @@ export function generateContentMetadata({
       : "";
 
   const ogUrl = new URL(`${siteConfig.site_domain}/api/og`);
-  ogUrl.searchParams.append("title", title);
+  ogUrl.searchParams.append("title", plainTitle);
   ogUrl.searchParams.append("description", description);
 
   const path = type === "post" ? "posts" : "pages";
 
   return {
-    title,
+    title: plainTitle,
     description,
     openGraph: {
-      title,
+      title: plainTitle,
       description,
       type: "article",
       url: `${siteConfig.site_domain}/${path}/${slug}`,
-      images: [{ url: ogUrl.toString(), width: 1200, height: 630, alt: title }],
+      images: [
+        { url: ogUrl.toString(), width: 1200, height: 630, alt: plainTitle },
+      ],
     },
     twitter: {
       card: "summary_large_image",
-      title,
+      title: plainTitle,
       description,
       images: [ogUrl.toString()],
     },

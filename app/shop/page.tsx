@@ -1,28 +1,16 @@
 import type { Metadata } from "next";
 
 import {
-  getProducts,
   getAllProductCategories,
   getAllProductTags,
   getProductCategoryBySlug,
   getProductTagBySlug,
 } from "@/lib/woocommerce";
+import { getCatalogProducts } from "@/lib/shop-catalog";
+import { getShopExcludedTagSlugs } from "@/lib/shop-settings";
 
 import { Section, Container, Prose } from "@/components/craft";
-import { ProductGrid, ProductFilters } from "@/components/shop";
-import {
-  Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-  PaginationNext,
-  PaginationPrevious,
-} from "@/components/ui/pagination";
-
-export const metadata: Metadata = {
-  title: "Shop",
-  description: "Browse our product catalog",
-};
+import { ProductFilters, ShopCatalog } from "@/components/shop";
 
 export const dynamic = "auto";
 export const revalidate = 600;
@@ -37,6 +25,29 @@ interface ShopPageProps {
     min_price?: string;
     max_price?: string;
   }>;
+}
+
+export async function generateMetadata({
+  searchParams,
+}: ShopPageProps): Promise<Metadata> {
+  const { category } = await searchParams;
+
+  if (category) {
+    const categoryData = await getProductCategoryBySlug(category);
+    if (categoryData) {
+      return {
+        title: categoryData.name,
+        description:
+          categoryData.description ||
+          `Browse ${categoryData.name} products`,
+      };
+    }
+  }
+
+  return {
+    title: "Shop",
+    description: "Browse our product catalog",
+  };
 }
 
 export default async function ShopPage({ searchParams }: ShopPageProps) {
@@ -54,7 +65,6 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
   const page = pageParam ? parseInt(pageParam, 10) : 1;
   const productsPerPage = 12;
 
-  // Parse sort parameter
   let orderby: "date" | "price" | "popularity" | "rating" | undefined;
   let order: "asc" | "desc" | undefined;
 
@@ -79,17 +89,19 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
       break;
   }
 
-  // Resolve category and tag slugs to IDs
-  const [categoryData, tagData] = await Promise.all([
+  const [categoryData, tagData, excludedTagSlugs] = await Promise.all([
     category ? getProductCategoryBySlug(category) : undefined,
     tag ? getProductTagBySlug(tag) : undefined,
+    getShopExcludedTagSlugs(),
   ]);
 
-  // Fetch products and filter options
   const [productsResponse, categories, tags] = await Promise.all([
-    getProducts(page, productsPerPage, {
+    getCatalogProducts({
+      page,
+      perPage: productsPerPage,
+      includeTagSlug: tag,
+      excludeTagSlugs: tag ? [] : excludedTagSlugs,
       category: categoryData?.id,
-      tag: tagData?.id,
       search,
       orderby,
       order,
@@ -103,7 +115,6 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
   const { data: products, headers } = productsResponse;
   const { total, totalPages } = headers;
 
-  // Create pagination URL helper
   const createPaginationUrl = (newPage: number) => {
     const urlParams = new URLSearchParams();
     if (newPage > 1) urlParams.set("page", newPage.toString());
@@ -116,7 +127,10 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
     return `/shop${urlParams.toString() ? `?${urlParams.toString()}` : ""}`;
   };
 
-  const pageTitle = categoryData?.name || "Shop";
+  const pageTitle = categoryData?.name || tagData?.name || "Shop";
+  const visibleTags = tag
+    ? tags
+    : tags.filter((t) => !excludedTagSlugs.includes(t.slug));
 
   return (
     <Section>
@@ -131,11 +145,10 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
           </Prose>
 
           <div className="grid lg:grid-cols-[280px_1fr] gap-8">
-            {/* Sidebar Filters */}
             <aside className="space-y-6">
               <ProductFilters
                 categories={categories}
-                tags={tags}
+                tags={visibleTags}
                 currentCategory={category}
                 currentTag={tag}
                 currentSearch={search}
@@ -145,58 +158,13 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
               />
             </aside>
 
-            {/* Product Grid */}
-            <div className="space-y-8">
-              <ProductGrid products={products} columns={3} />
-
-              {totalPages > 1 && (
-                <div className="flex justify-center items-center py-8">
-                  <Pagination>
-                    <PaginationContent>
-                      {page > 1 && (
-                        <PaginationItem>
-                          <PaginationPrevious
-                            href={createPaginationUrl(page - 1)}
-                          />
-                        </PaginationItem>
-                      )}
-
-                      {Array.from({ length: totalPages }, (_, i) => i + 1)
-                        .filter((pageNum) => {
-                          return (
-                            pageNum === 1 ||
-                            pageNum === totalPages ||
-                            Math.abs(pageNum - page) <= 1
-                          );
-                        })
-                        .map((pageNum, index, array) => {
-                          const showEllipsis =
-                            index > 0 && pageNum - array[index - 1] > 1;
-                          return (
-                            <div key={pageNum} className="flex items-center">
-                              {showEllipsis && <span className="px-2">...</span>}
-                              <PaginationItem>
-                                <PaginationLink
-                                  href={createPaginationUrl(pageNum)}
-                                  isActive={pageNum === page}
-                                >
-                                  {pageNum}
-                                </PaginationLink>
-                              </PaginationItem>
-                            </div>
-                          );
-                        })}
-
-                      {page < totalPages && (
-                        <PaginationItem>
-                          <PaginationNext href={createPaginationUrl(page + 1)} />
-                        </PaginationItem>
-                      )}
-                    </PaginationContent>
-                  </Pagination>
-                </div>
-              )}
-            </div>
+            <ShopCatalog
+              products={products}
+              totalPages={totalPages}
+              currentPage={page}
+              createPageUrl={createPaginationUrl}
+              columns={3}
+            />
           </div>
         </div>
       </Container>

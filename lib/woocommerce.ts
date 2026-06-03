@@ -1,6 +1,10 @@
 // WooCommerce REST API Functions
 // Uses WooCommerce REST API v3 with consumer key/secret authentication
 
+import { cache } from "react";
+
+import { decodeHtmlEntities } from "@/lib/metadata";
+
 import type {
   Product,
   ProductVariation,
@@ -23,7 +27,8 @@ const consumerSecret = process.env.WC_CONSUMER_SECRET;
 
 const isConfigured = Boolean(baseUrl && consumerKey && consumerSecret);
 
-if (!isConfigured) {
+// Server-only env vars are undefined in client bundles; only warn on the server.
+if (!isConfigured && typeof window === "undefined") {
   console.warn(
     "WooCommerce environment variables are not fully configured - WooCommerce features will be unavailable"
   );
@@ -56,29 +61,92 @@ export interface WooCommerceResponse<T> {
 const USER_AGENT = "Next.js WooCommerce Client";
 const CACHE_TTL = 3600; // 1 hour
 
-// Build authenticated URL for WooCommerce REST API
+function normalizeProduct(product: Product): Product {
+  return {
+    ...product,
+    name: decodeHtmlEntities(product.name),
+    categories: product.categories.map((cat) => ({
+      ...cat,
+      name: decodeHtmlEntities(cat.name),
+    })),
+    tags: product.tags.map((tag) => ({
+      ...tag,
+      name: decodeHtmlEntities(tag.name),
+    })),
+  };
+}
+
+function normalizeProducts(products: Product[]): Product[] {
+  return products.map(normalizeProduct);
+}
+
+function normalizeCategory(category: ProductCategory): ProductCategory {
+  return {
+    ...category,
+    name: decodeHtmlEntities(category.name),
+    description: category.description
+      ? decodeHtmlEntities(category.description)
+      : category.description,
+  };
+}
+
+function normalizeCategories(categories: ProductCategory[]): ProductCategory[] {
+  return categories.map(normalizeCategory);
+}
+
+// Basic auth keeps credentials out of URLs (avoids Cloudflare/WAF blocks on query strings).
+function getWooCommerceHeaders(): Record<string, string> {
+  const credentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString(
+    "base64"
+  );
+  return {
+    "User-Agent": USER_AGENT,
+    "Content-Type": "application/json",
+    Authorization: `Basic ${credentials}`,
+  };
+}
+
+// Build URL for WooCommerce REST API (auth via Authorization header)
 function buildWooCommerceUrl(
   endpoint: string,
   query?: Record<string, any>
 ): string {
-  if (!baseUrl || !consumerKey || !consumerSecret) {
+  if (!baseUrl) {
     throw new Error("WooCommerce not configured");
   }
 
   const url = new URL(`${baseUrl}/wp-json/wc/v3/${endpoint}`);
-  url.searchParams.set("consumer_key", consumerKey);
-  url.searchParams.set("consumer_secret", consumerSecret);
 
   if (query) {
     Object.entries(query).forEach(([key, value]) => {
       if (value !== undefined && value !== null) {
-        url.searchParams.set(key, String(value));
+        if (Array.isArray(value)) {
+          url.searchParams.set(key, value.join(","));
+        } else {
+          url.searchParams.set(key, String(value));
+        }
       }
     });
   }
 
   return url.toString();
 }
+
+// Fallback for hosts that expect key/secret in the query string
+function buildWooCommerceUrlWithQueryAuth(
+  endpoint: string,
+  query?: Record<string, any>
+): string {
+  const url = new URL(buildWooCommerceUrl(endpoint, query));
+  url.searchParams.set("consumer_key", consumerKey!);
+  url.searchParams.set("consumer_secret", consumerSecret!);
+  return url.toString();
+}
+
+const wooCommerceJsonHeaders = {
+  "User-Agent": USER_AGENT,
+  "Content-Type": "application/json",
+} as const;
 
 // Core fetch - throws on error
 async function woocommerceFetch<T>(
@@ -92,18 +160,31 @@ async function woocommerceFetch<T>(
   }
 
   const url = buildWooCommerceUrl(endpoint, query);
-
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      "Content-Type": "application/json",
-    },
+  const fetchOptions: RequestInit = {
+    headers: getWooCommerceHeaders(),
     next: { tags, revalidate: CACHE_TTL },
     ...options,
-  });
+  };
+
+  let response = await fetch(url, fetchOptions);
+
+  // Cloudflare/WAF may return transient 403s; retry without cache, then query-string auth.
+  if (response.status === 403) {
+    response = await fetch(url, { ...fetchOptions, cache: "no-store", next: undefined });
+  }
+  if (response.status === 403) {
+    const queryAuthUrl = buildWooCommerceUrlWithQueryAuth(endpoint, query);
+    response = await fetch(queryAuthUrl, {
+      headers: wooCommerceJsonHeaders,
+      cache: "no-store",
+    });
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    // #region agent log
+    fetch('http://127.0.0.1:7542/ingest/4d07387d-caa8-4d85-bb9e-1bf621bf46d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fe150f'},body:JSON.stringify({sessionId:'fe150f',location:'woocommerce.ts:woocommerceFetch',message:'API error (strict)',data:{endpoint,status:response.status,statusText:response.statusText,queryKeys:query?Object.keys(query):[]},timestamp:Date.now(),hypothesisId:'H2-H5'})}).catch(()=>{});
+    // #endregion
     throw new WooCommerceAPIError(
       errorData.message || `WooCommerce API request failed: ${response.statusText}`,
       response.status,
@@ -126,7 +207,10 @@ async function woocommerceFetchGraceful<T>(
 
   try {
     return await woocommerceFetch<T>(endpoint, query, tags);
-  } catch {
+  } catch (err) {
+    // #region agent log
+    fetch('http://127.0.0.1:7542/ingest/4d07387d-caa8-4d85-bb9e-1bf621bf46d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fe150f'},body:JSON.stringify({sessionId:'fe150f',location:'woocommerce.ts:woocommerceFetchGraceful',message:'API error (graceful)',data:{endpoint,status:err instanceof WooCommerceAPIError?err.status:null,queryKeys:query?Object.keys(query):[],slug:query?.slug},timestamp:Date.now(),hypothesisId:'H1-H5'})}).catch(()=>{});
+    // #endregion
     console.warn(`WooCommerce fetch failed for ${endpoint}`);
     return fallback;
   }
@@ -143,14 +227,22 @@ async function woocommerceFetchPaginated<T>(
   }
 
   const url = buildWooCommerceUrl(endpoint, query);
-
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      "Content-Type": "application/json",
-    },
+  const fetchOptions: RequestInit = {
+    headers: getWooCommerceHeaders(),
     next: { tags, revalidate: CACHE_TTL },
-  });
+  };
+
+  let response = await fetch(url, fetchOptions);
+  if (response.status === 403) {
+    response = await fetch(url, { ...fetchOptions, cache: "no-store", next: undefined });
+  }
+  if (response.status === 403) {
+    const queryAuthUrl = buildWooCommerceUrlWithQueryAuth(endpoint, query);
+    response = await fetch(queryAuthUrl, {
+      headers: wooCommerceJsonHeaders,
+      cache: "no-store",
+    });
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -206,10 +298,7 @@ async function woocommerceMutate<T>(
 
   const response = await fetch(url, {
     method,
-    headers: {
-      "User-Agent": USER_AGENT,
-      "Content-Type": "application/json",
-    },
+    headers: getWooCommerceHeaders(),
     body: body ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
@@ -237,6 +326,7 @@ export async function getProducts(
   params?: {
     category?: number;
     tag?: number;
+    tag_exclude?: number | number[];
     search?: string;
     orderby?: "date" | "id" | "title" | "slug" | "price" | "popularity" | "rating";
     order?: "asc" | "desc";
@@ -247,20 +337,34 @@ export async function getProducts(
     stock_status?: "instock" | "outofstock" | "onbackorder";
   }
 ): Promise<WooCommerceResponse<Product[]>> {
-  const query: Record<string, any> = {
+  const { tag_exclude, ...restParams } = params ?? {};
+  const query: Record<string, unknown> = {
     per_page: perPage,
     page,
     status: "publish",
-    ...params,
+    ...restParams,
   };
+
+  if (tag_exclude !== undefined) {
+    const ids = Array.isArray(tag_exclude) ? tag_exclude : [tag_exclude];
+    if (ids.length > 0) {
+      query.tag_exclude = ids;
+    }
+  }
 
   const cacheTags = ["woocommerce", "products", `products-page-${page}`];
 
   if (params?.category) cacheTags.push(`products-category-${params.category}`);
   if (params?.tag) cacheTags.push(`products-tag-${params.tag}`);
+  if (tag_exclude !== undefined) cacheTags.push("products-tag-exclude");
   if (params?.search) cacheTags.push("products-search");
 
-  return woocommerceFetchPaginatedGraceful<Product>("products", query, cacheTags);
+  const response = await woocommerceFetchPaginatedGraceful<Product>(
+    "products",
+    query,
+    cacheTags
+  );
+  return { ...response, data: normalizeProducts(response.data) };
 }
 
 export async function getAllProducts(params?: {
@@ -269,66 +373,78 @@ export async function getAllProducts(params?: {
   featured?: boolean;
   on_sale?: boolean;
 }): Promise<Product[]> {
-  return woocommerceFetchGraceful<Product[]>(
+  const products = await woocommerceFetchGraceful<Product[]>(
     "products",
     [],
     { per_page: 100, status: "publish", ...params },
     ["woocommerce", "products"]
   );
+  return normalizeProducts(products);
 }
 
 export async function getProductById(id: number): Promise<Product> {
-  return woocommerceFetch<Product>(`products/${id}`, undefined, [
+  const product = await woocommerceFetch<Product>(`products/${id}`, undefined, [
     "woocommerce",
     "products",
     `product-${id}`,
   ]);
+  return normalizeProduct(product);
 }
 
-export async function getProductBySlug(slug: string): Promise<Product | undefined> {
+export const getProductBySlug = cache(async function getProductBySlug(
+  slug: string
+): Promise<Product | undefined> {
   const products = await woocommerceFetchGraceful<Product[]>(
     "products",
     [],
     { slug, status: "publish" },
     ["woocommerce", "products"]
   );
-  return products[0];
-}
+  // #region agent log
+  fetch('http://127.0.0.1:7542/ingest/4d07387d-caa8-4d85-bb9e-1bf621bf46d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fe150f'},body:JSON.stringify({sessionId:'fe150f',location:'woocommerce.ts:getProductBySlug',message:'slug lookup result',data:{slug,resultCount:products.length,productId:products[0]?.id},timestamp:Date.now(),hypothesisId:'H1-H3'})}).catch(()=>{});
+  // #endregion
+  return products[0] ? normalizeProduct(products[0]) : undefined;
+});
 
 export async function getFeaturedProducts(limit: number = 4): Promise<Product[]> {
-  return woocommerceFetchGraceful<Product[]>(
+  const products = await woocommerceFetchGraceful<Product[]>(
     "products",
     [],
     { featured: true, per_page: limit, status: "publish" },
     ["woocommerce", "products", "products-featured"]
   );
+  return normalizeProducts(products);
 }
 
 export async function getOnSaleProducts(limit: number = 8): Promise<Product[]> {
-  return woocommerceFetchGraceful<Product[]>(
+  const products = await woocommerceFetchGraceful<Product[]>(
     "products",
     [],
     { on_sale: true, per_page: limit, status: "publish" },
     ["woocommerce", "products", "products-sale"]
   );
+  return normalizeProducts(products);
 }
 
 export async function getRelatedProducts(
-  productId: number,
+  relatedIds: number[] | undefined,
   limit: number = 4
 ): Promise<Product[]> {
-  const product = await getProductById(productId);
-  if (!product.related_ids || product.related_ids.length === 0) {
+  // #region agent log
+  fetch('http://127.0.0.1:7542/ingest/4d07387d-caa8-4d85-bb9e-1bf621bf46d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fe150f'},body:JSON.stringify({sessionId:'fe150f',location:'woocommerce.ts:getRelatedProducts',message:'fetching related by ids',data:{relatedIdsCount:relatedIds?.length??0,limit},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+  // #endregion
+  if (!relatedIds || relatedIds.length === 0) {
     return [];
   }
 
-  const relatedIds = product.related_ids.slice(0, limit);
-  return woocommerceFetchGraceful<Product[]>(
+  const ids = relatedIds.slice(0, limit);
+  const products = await woocommerceFetchGraceful<Product[]>(
     "products",
     [],
-    { include: relatedIds.join(","), status: "publish" },
+    { include: ids.join(","), status: "publish" },
     ["woocommerce", "products"]
   );
+  return normalizeProducts(products);
 }
 
 // For static generation
@@ -393,28 +509,31 @@ export async function getProductCategories(
   page: number = 1,
   perPage: number = 100
 ): Promise<WooCommerceResponse<ProductCategory[]>> {
-  return woocommerceFetchPaginatedGraceful<ProductCategory>(
+  const response = await woocommerceFetchPaginatedGraceful<ProductCategory>(
     "products/categories",
     { per_page: perPage, page, hide_empty: true },
     ["woocommerce", "categories"]
   );
+  return { ...response, data: normalizeCategories(response.data) };
 }
 
 export async function getAllProductCategories(): Promise<ProductCategory[]> {
-  return woocommerceFetchGraceful<ProductCategory[]>(
+  const categories = await woocommerceFetchGraceful<ProductCategory[]>(
     "products/categories",
     [],
     { per_page: 100, hide_empty: true },
     ["woocommerce", "categories"]
   );
+  return normalizeCategories(categories);
 }
 
 export async function getProductCategoryById(id: number): Promise<ProductCategory> {
-  return woocommerceFetch<ProductCategory>(
+  const category = await woocommerceFetch<ProductCategory>(
     `products/categories/${id}`,
     undefined,
     ["woocommerce", "categories", `category-${id}`]
   );
+  return normalizeCategory(category);
 }
 
 export async function getProductCategoryBySlug(
@@ -426,7 +545,7 @@ export async function getProductCategoryBySlug(
     { slug },
     ["woocommerce", "categories"]
   );
-  return categories[0];
+  return categories[0] ? normalizeCategory(categories[0]) : undefined;
 }
 
 export async function getAllCategorySlugs(): Promise<{ slug: string }[]> {
@@ -475,6 +594,33 @@ export async function getProductTagBySlug(
     ["woocommerce", "tags"]
   );
   return tags[0];
+}
+
+export async function getProductTagIdsBySlugs(
+  slugs: string[]
+): Promise<number[]> {
+  if (slugs.length === 0) return [];
+
+  const ids = await Promise.all(
+    slugs.map(async (slug) => {
+      const tag = await getProductTagBySlug(slug);
+      return tag?.id;
+    })
+  );
+
+  return ids.filter((id): id is number => id !== undefined);
+}
+
+export function productHasTagSlug(product: Product, slug: string): boolean {
+  return product.tags.some((tag) => tag.slug === slug);
+}
+
+export function productHasAnyTagSlug(
+  product: Product,
+  slugs: string[]
+): boolean {
+  if (slugs.length === 0) return false;
+  return product.tags.some((tag) => slugs.includes(tag.slug));
 }
 
 // ============================================================================

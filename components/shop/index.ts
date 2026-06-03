@@ -3,6 +3,7 @@ export { ProductCard } from "./product-card";
 export { ProductGallery } from "./product-gallery";
 export { ProductGrid } from "./product-grid";
 export { ProductFilters } from "./product-filters";
+export { ShopCatalog } from "./shop-catalog";
 export { PriceDisplay } from "./price-display";
 export { StockBadge } from "./stock-badge";
 export { VariationSelector } from "./variation-selector";

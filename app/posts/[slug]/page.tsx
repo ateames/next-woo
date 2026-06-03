@@ -1,5 +1,5 @@
 import { getPostBySlug, getAllPostSlugs } from "@/lib/wordpress";
-import { generateContentMetadata } from "@/lib/metadata";
+import { generateContentMetadata, stripHtml } from "@/lib/metadata";
 
 import { Section, Container, Article, Prose } from "@/components/craft";
 import { badgeVariants } from "@/components/ui/badge";
@@ -94,7 +94,7 @@ export default async function Page({
               <img
                 className="w-full h-full object-cover"
                 src={featuredMedia.source_url}
-                alt={post.title.rendered}
+                alt={stripHtml(post.title.rendered)}
               />
             </div>
           )}

@@ -1,7 +1,10 @@
-import { getPageBySlug, getAllPages } from "@/lib/wordpress";
-import { generateContentMetadata } from "@/lib/metadata";
-import { Section, Container, Prose } from "@/components/craft";
+import { redirect } from "next/navigation";
 import { notFound } from "next/navigation";
+
+import { getPageBySlug, getAllPages } from "@/lib/wordpress";
+import { getPageProductTagSlug } from "@/lib/shop-catalog";
+import { generateContentMetadata, stripHtml } from "@/lib/metadata";
+import { Section, Container, Prose } from "@/components/craft";
 
 import type { Metadata } from "next";
 
@@ -49,11 +52,15 @@ export default async function Page({
     notFound();
   }
 
+  if (getPageProductTagSlug(page)) {
+    redirect(`/${slug}`);
+  }
+
   return (
     <Section>
       <Container>
         <Prose>
-          <h2>{page.title.rendered}</h2>
+          <h2>{stripHtml(page.title.rendered)}</h2>
           <div dangerouslySetInnerHTML={{ __html: page.content.rendered }} />
         </Prose>
       </Container>

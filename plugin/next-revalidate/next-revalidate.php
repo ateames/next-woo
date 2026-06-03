@@ -61,6 +61,18 @@ class Next_Revalidation {
         add_action('wp_update_nav_menu', array($this, 'on_menu_change'), 10);
         add_action('wp_create_nav_menu', array($this, 'on_menu_change'), 10);
         add_action('wp_delete_nav_menu', array($this, 'on_menu_change'), 10);
+
+        // Shop catalog: excluded tags, landing page meta, REST
+        add_action('rest_api_init', array($this, 'register_rest_routes'));
+        add_action('init', array($this, 'register_page_meta'));
+        add_action('add_meta_boxes', array($this, 'add_page_meta_box'));
+        add_action('save_post_page', array($this, 'save_page_product_tag_meta'), 10, 2);
+        add_action('update_option_' . $this->option_name, array($this, 'on_settings_updated'), 10, 2);
+
+        if (class_exists('WooCommerce')) {
+            add_filter('woocommerce_rest_product_collection_params', array($this, 'add_tag_exclude_collection_param'));
+            add_filter('woocommerce_rest_product_query', array($this, 'apply_tag_exclude_product_query'), 10, 2);
+        }
     }
 
     public function init() {
@@ -112,6 +124,21 @@ class Next_Revalidation {
             'next-revalidation-settings',
             'next_revalidation_section'
         );
+
+        add_settings_section(
+            'next_shop_section',
+            'Headless Shop Settings',
+            array($this, 'shop_settings_section_callback'),
+            'next-revalidation-settings'
+        );
+
+        add_settings_field(
+            'shop_excluded_product_tags',
+            'Excluded product tags (main shop)',
+            array($this, 'shop_excluded_product_tags_callback'),
+            'next-revalidation-settings',
+            'next_shop_section'
+        );
     }
 
     public function sanitize_settings($input) {
@@ -134,6 +161,10 @@ class Next_Revalidation {
         if(isset($input['revalidation_cooldown'])) {
             $cooldown = intval($input['revalidation_cooldown']);
             $new_input['revalidation_cooldown'] = max(0, min(60, $cooldown)); // Between 0 and 60 seconds
+        }
+
+        if (isset($input['shop_excluded_product_tags'])) {
+            $new_input['shop_excluded_product_tags'] = sanitize_text_field($input['shop_excluded_product_tags']);
         }
         
         return $new_input;
@@ -165,6 +196,125 @@ class Next_Revalidation {
         $value = isset($this->options['revalidation_cooldown']) ? intval($this->options['revalidation_cooldown']) : 2;
         echo '<input type="number" min="0" max="60" id="revalidation_cooldown" name="' . $this->option_name . '[revalidation_cooldown]" value="' . $value . '" class="small-text" />';
         echo '<p class="description">Minimum seconds between revalidation requests (0-60). Use higher values for busy sites.</p>';
+    }
+
+    public function shop_settings_section_callback() {
+        echo '<p>Control which WooCommerce product tags are hidden from the main Next.js shop and home featured products. Use comma-separated tag slugs (from <strong>Products → Tags</strong>).</p>';
+    }
+
+    public function shop_excluded_product_tags_callback() {
+        $value = isset($this->options['shop_excluded_product_tags']) ? esc_attr($this->options['shop_excluded_product_tags']) : '';
+        echo '<input type="text" id="shop_excluded_product_tags" name="' . $this->option_name . '[shop_excluded_product_tags]" value="' . $value . '" class="large-text" placeholder="custom, wholesale" />';
+        echo '<p class="description">Products with these tags stay off <code>/shop</code> but can appear on tag landing pages.</p>';
+    }
+
+    public function register_rest_routes() {
+        register_rest_route('next-woo/v1', '/shop-settings', array(
+            'methods' => 'GET',
+            'permission_callback' => '__return_true',
+            'callback' => array($this, 'get_shop_settings_rest'),
+        ));
+    }
+
+    public function get_shop_settings_rest() {
+        return array(
+            'excluded_product_tags' => $this->get_excluded_product_tag_slugs(),
+        );
+    }
+
+    private function get_excluded_product_tag_slugs() {
+        $options = get_option($this->option_name, array());
+        $raw = isset($options['shop_excluded_product_tags']) ? $options['shop_excluded_product_tags'] : '';
+        if ($raw === '') {
+            return array();
+        }
+        $slugs = array_map('trim', explode(',', $raw));
+        $slugs = array_map('sanitize_title', $slugs);
+        $slugs = array_filter($slugs);
+        return array_values(array_unique($slugs));
+    }
+
+    public function on_settings_updated($old_value, $value) {
+        $this->send_revalidation_request('shop_settings', null);
+    }
+
+    public function register_page_meta() {
+        register_post_meta('page', 'product_tag_slug', array(
+            'type' => 'string',
+            'single' => true,
+            'show_in_rest' => true,
+            'default' => '',
+            'sanitize_callback' => 'sanitize_title',
+            'auth_callback' => function () {
+                return current_user_can('edit_pages');
+            },
+        ));
+    }
+
+    public function add_page_meta_box() {
+        add_meta_box(
+            'next_woo_product_tag',
+            'Headless Shop — Product tag',
+            array($this, 'render_page_product_tag_meta_box'),
+            'page',
+            'side',
+            'default'
+        );
+    }
+
+    public function render_page_product_tag_meta_box($post) {
+        wp_nonce_field('next_woo_product_tag_meta', 'next_woo_product_tag_nonce');
+        $value = get_post_meta($post->ID, 'product_tag_slug', true);
+        echo '<p><label for="product_tag_slug">WooCommerce product tag slug</label></p>';
+        echo '<input type="text" id="product_tag_slug" name="product_tag_slug" value="' . esc_attr($value) . '" class="widefat" placeholder="custom" />';
+        echo '<p class="description">When set, this page is served at <code>/' . esc_html($post->post_name) . '</code> with only products that have this tag. Leave empty for a normal content page at <code>/pages/' . esc_html($post->post_name) . '</code>.</p>';
+    }
+
+    public function save_page_product_tag_meta($post_id, $post) {
+        if (!isset($_POST['next_woo_product_tag_nonce']) || !wp_verify_nonce($_POST['next_woo_product_tag_nonce'], 'next_woo_product_tag_meta')) {
+            return;
+        }
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            return;
+        }
+        if (!current_user_can('edit_page', $post_id)) {
+            return;
+        }
+        $slug = isset($_POST['product_tag_slug']) ? sanitize_title($_POST['product_tag_slug']) : '';
+        update_post_meta($post_id, 'product_tag_slug', $slug);
+        $this->send_revalidation_request('page', $post_id);
+    }
+
+    public function add_tag_exclude_collection_param($params) {
+        $params['tag_exclude'] = array(
+            'description' => __('Exclude products assigned specific tag IDs (comma-separated).', 'next-revalidate'),
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+        );
+        return $params;
+    }
+
+    public function apply_tag_exclude_product_query($args, $request) {
+        $tag_exclude = $request->get_param('tag_exclude');
+        if (empty($tag_exclude)) {
+            return $args;
+        }
+
+        $tag_ids = array_filter(array_map('absint', explode(',', $tag_exclude)));
+        if (empty($tag_ids)) {
+            return $args;
+        }
+
+        $tax_query = isset($args['tax_query']) ? $args['tax_query'] : array();
+        $tax_query[] = array(
+            'taxonomy' => 'product_tag',
+            'field' => 'term_id',
+            'terms' => $tag_ids,
+            'operator' => 'NOT IN',
+        );
+        $args['tax_query'] = $tax_query;
+
+        return $args;
     }
 
     public function add_admin_menu() {

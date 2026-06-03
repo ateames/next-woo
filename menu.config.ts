@@ -1,9 +1,24 @@
-// Define the menu items
+// Main navigation (matches pleasantonthreads.com shop menu)
 export const mainMenu = {
-  home: "/",
   shop: "/shop",
-  blog: "/posts",
-  about: "https://github.com/9d8dev/next-wp",
+  womens: "/shop?category=womens",
+  shirts: "/shop?category=all-shirts",
+  hoodies: "/shop?category=hoodies-sweatshirts",
+  youth: "/shop?category=youth_kids",
+  baby: "/shop?category=baby",
+  hats: "/shop?category=hats",
+  home: "/shop?category=home_living",
+};
+
+export const mainMenuLabels: Record<keyof typeof mainMenu, string> = {
+  shop: "Shop",
+  womens: "Women's",
+  shirts: "Adult T-Shirts",
+  hoodies: "Hoodies & Sweatshirts",
+  youth: "Youth & Kids",
+  baby: "Baby",
+  hats: "Hats",
+  home: "Home & Living",
 };
 
 export const contentMenu = {

@@ -5,7 +5,8 @@ type SiteConfig = {
 };
 
 export const siteConfig: SiteConfig = {
-  site_name: "next-woo",
-  site_description: "Headless WooCommerce store powered by Next.js",
-  site_domain: "https://next-woo.com",
+  site_name: "Pleasanton Threads",
+  site_description:
+    "Locally inspired apparel and gifts celebrating Pleasanton pride — shop tees, hoodies, youth wear, baby onesies, hats, and more.",
+  site_domain: "https://pleasantonthreads.com",
 };

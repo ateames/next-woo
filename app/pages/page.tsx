@@ -1,4 +1,5 @@
 import { getAllPages } from "@/lib/wordpress";
+import { stripHtml } from "@/lib/metadata";
 import { Section, Container, Prose } from "@/components/craft";
 import { Metadata } from "next";
 import BackButton from "@/components/back";
@@ -26,7 +27,9 @@ export default async function Page() {
             <ul className="grid">
               {pages.map((page: any) => (
                 <li key={page.id}>
-                  <Link href={`/pages/${page.slug}`}>{page.title.rendered}</Link>
+                  <Link href={`/pages/${page.slug}`}>
+                    {stripHtml(page.title.rendered)}
+                  </Link>
                 </li>
               ))}
             </ul>

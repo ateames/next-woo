@@ -8,7 +8,10 @@ import {
   getProductReviews,
   getRelatedProducts,
   getAllProductSlugs,
+  productHasAnyTagSlug,
 } from "@/lib/woocommerce";
+import { getShopExcludedTagSlugs } from "@/lib/shop-settings";
+import { stripHtml } from "@/lib/metadata";
 
 import { Section, Container, Prose } from "@/components/craft";
 import {
@@ -46,10 +49,10 @@ export async function generateMetadata({
 
   return {
     title: product.name,
-    description: product.short_description.replace(/<[^>]*>/g, "").slice(0, 160),
+    description: stripHtml(product.short_description).slice(0, 160),
     openGraph: {
       title: product.name,
-      description: product.short_description.replace(/<[^>]*>/g, ""),
+      description: stripHtml(product.short_description),
       images: product.images[0]?.src ? [product.images[0].src] : [],
     },
   };
@@ -59,16 +62,26 @@ export default async function ProductPage({ params }: ProductPageProps) {
   const { slug } = await params;
   const product = await getProductBySlug(slug);
 
+  // #region agent log
+  fetch('http://127.0.0.1:7542/ingest/4d07387d-caa8-4d85-bb9e-1bf621bf46d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fe150f'},body:JSON.stringify({sessionId:'fe150f',location:'page.tsx:ProductPage',message:'product page slug resolved',data:{slug,found:Boolean(product),productId:product?.id,relatedIdsCount:product?.related_ids?.length??0},timestamp:Date.now(),hypothesisId:'H1-H4'})}).catch(()=>{});
+  // #endregion
+
   if (!product) {
     notFound();
   }
 
   // Fetch additional data in parallel
-  const [variations, reviews, relatedProducts] = await Promise.all([
-    product.type === "variable" ? getProductVariations(product.id) : [],
-    getProductReviews(product.id),
-    getRelatedProducts(product.id, 4),
-  ]);
+  const [variations, reviews, relatedProductsRaw, excludedTagSlugs] =
+    await Promise.all([
+      product.type === "variable" ? getProductVariations(product.id) : [],
+      getProductReviews(product.id),
+      getRelatedProducts(product.related_ids, 4),
+      getShopExcludedTagSlugs(),
+    ]);
+
+  const relatedProducts = relatedProductsRaw.filter(
+    (p) => !productHasAnyTagSlug(p, excludedTagSlugs)
+  );
 
   return (
     <Section>
@@ -157,7 +170,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
               {product.short_description && (
                 <Prose>
                   <div className="text-muted-foreground">
-                    {product.short_description.replace(/<[^>]*>/g, "")}
+                    {stripHtml(product.short_description)}
                   </div>
                 </Prose>
               )}
@@ -207,7 +220,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
               <h2 className="text-2xl font-bold">Description</h2>
               <Prose>
                 <div className="text-muted-foreground">
-                  {product.description.replace(/<[^>]*>/g, "")}
+                  {stripHtml(product.description)}
                 </div>
               </Prose>
             </div>
@@ -245,7 +258,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
                       </div>
                     </div>
                     <p className="text-muted-foreground">
-                      {review.review.replace(/<[^>]*>/g, "")}
+                      {stripHtml(review.review)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {new Date(review.date_created).toLocaleDateString()}
