@@ -103,6 +103,12 @@ export async function POST(request: NextRequest) {
         if (contentId) {
           revalidateTag(`product-${contentId}`, { expire: 0 });
         }
+      } else if (contentType === "shop_settings") {
+        revalidateTag("shop-settings", { expire: 0 });
+        revalidateTag("woocommerce", { expire: 0 });
+        revalidateTag("products", { expire: 0 });
+        revalidateTag("products-tag-exclude", { expire: 0 });
+        revalidateTag("products-page-1", { expire: 0 });
       }
 
       // Also revalidate the entire layout for safety

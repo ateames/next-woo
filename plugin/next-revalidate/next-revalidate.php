@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Next.js Revalidation
  * Description: Revalidates Next.js site when WordPress content changes
- * Version: 1.0.5
+ * Version: 1.0.6
  * Author: 9d8
  * Author URI: https://9d8.dev
  */
@@ -69,10 +69,17 @@ class Next_Revalidation {
         add_action('save_post_page', array($this, 'save_page_product_tag_meta'), 10, 2);
         add_action('update_option_' . $this->option_name, array($this, 'on_settings_updated'), 10, 2);
 
-        if (class_exists('WooCommerce')) {
-            add_filter('woocommerce_rest_product_collection_params', array($this, 'add_tag_exclude_collection_param'));
-            add_filter('woocommerce_rest_product_query', array($this, 'apply_tag_exclude_product_query'), 10, 2);
+        // Register after WooCommerce loads (this plugin often loads before WooCommerce).
+        add_action('plugins_loaded', array($this, 'register_woocommerce_hooks'));
+    }
+
+    public function register_woocommerce_hooks() {
+        if (!class_exists('WooCommerce')) {
+            return;
         }
+
+        add_filter('woocommerce_rest_product_collection_params', array($this, 'add_tag_exclude_collection_param'));
+        add_filter('woocommerce_rest_product_query', array($this, 'apply_tag_exclude_product_query'), 10, 2);
     }
 
     public function init() {
